@@ -1,8 +1,9 @@
 const prompts = require("prompts");
 const Discord = require("discord.js");
+const colors = require("colors");
 const page = require("./page");
 const client = new Discord.Client();
-const MESSAGE_PAGES_SIZE = 20;
+const MESSAGE_PAGE_SIZE = 20;
 let currentServer = null;
 let currentChannel = null;
 
@@ -66,7 +67,7 @@ async function cli(line)
                     break;
                 case "channels":
                     console.log("Channels:\n**********************************************");
-                    client.channels.forEach(channel=>console.log((channel.type === "group" ? "" : channel.guild + ": ") + channel.name + " " + channel.id));
+                    client.channels.forEach(channel=>{if(args[2] === undefined || args[2] === channel.type)console.log((channel.type === "dm" ? "DM".bold : channel.type.replace(channel.type.charAt(0), channel.type.charAt(0).toUpperCase()).bold) + ((channel.type === "dm" || channel.type === "group") ? "" : " " + channel.guild.name.blue) + " " + getChannelName(channel).red + " " + channel.id.yellow);});
                     console.log("**********************************************");
                     break;
                 case "messages":
@@ -75,23 +76,30 @@ async function cli(line)
                         console.log("Error: you must select a channel first");
                         break;
                     }
+                    let pageIndex = allnumeric(args[2]) ? parseInt(args[2], 10) : 0;
+                    let pages = new page(MESSAGE_PAGE_SIZE);
+                    // console.log((pages.latestIndex < pageIndex && pages.full(pages.latestIndex)));
+                    for(let msg = (await currentChannel.fetchMessages({limit: 1})).first(); (pages.latestIndex < pageIndex || !pages.full(pages.latestIndex)) && msg !== undefined; msg = (await currentChannel.fetchMessages({limit: 1, before: msg.id})).first())
+                    {
+                        // console.log(msg);
+                        pages.push(msg);
+                    }
+
+                    let msgPage = pages.getPage(pageIndex).reverse();
+                    // console.log(msgPage);
                     console.log("Messages:\n**********************************************");
-                    let pageIndex = allnumeric(args[2]) ? parseInt(args[2], 10) : -1;
-                    let pages = new page(MESSAGE_PAGES_SIZE);
-                    currentChannel.messages.forEach(message=>{
-                        if(pages.length -1 >= pageIndex && pageIndex != -1)return;
-                        pages.push(message);
-                    });
-                    let messages = [];
-                    if(pageIndex === -1)messages = pages.getLatestPage();
-                    else messages = pages.getPage(pageIndex);
-                    messages.forEach(message=>{
+                    for(let message of msgPage)
+                    {
                         console.log("\n\n==============================================");
                         let author =  message.author;
-                        console.log(author.username + "#" + author.discriminator + "(" + author.id + "):");
-                        console.log("sent on:" + message.createdAt.toISOString())
+                        console.log(author.username + "#" + author.discriminator + " " + (author.bot ? "Bot " : "") + "(" + author.id + "):");
+                        console.log("sent on: " + message.createdAt.toISOString() + (message.editedAt ? "   edited on: " + message.editedAt.toISOString() : ""));
+                        console.log("----------------------------------------------");
+                        console.log(message.content);
+                        console.log("----------------------------------------------");
+                        console.log(message.id);
                         console.log("==============================================");
-                    });
+                    }
                     console.log("**********************************************");
                     break;
             }
@@ -120,7 +128,7 @@ async function cli(line)
                 break;
             }
             let message = await messageInput();
-            if(message.length > 0)currentChannel.send(message);
+            if(message.length > 0)await currentChannel.send(message);
             break;
         case "sendAs":
             if(currentChannel === null)
@@ -128,22 +136,38 @@ async function cli(line)
                 console.log("Error: you must select a channel first");
                 break;
             }
-            let target;
-            currentServer.members.forEach(member => {if(args[1] === member.id || args[1] === member.user.username || args[1] === member.nickname)target = member;});
-            // if(target.id === client.user.id)
-            // {
-            //     console.log("Error: you must select a channel first");
-            //     break;
-            // }
-            let troll = await messageInput();
-            if(troll.length > 0)currentChannel.createWebhook(target.displayName, target.user.avatarURL).then(webHook => webHook.send(troll));
+            let anonyMessage = await messageInput();
+            let username, userAvatarURL;
+            if(anonyMessage.length < 0)break;
+            switch(args.length)
+            {
+                case 2:
+                    currentServer.members.forEach(member => {
+                        if(args[1] === member.id || args[1] === member.user.username || args[1] === member.nickname)
+                        {
+                            username = member.displayName;
+                            userAvatarURL = member.user.avatarURL;
+                            console.log(username + "\n" + userAvatarURL);
+                        }
+                    });
+                    break;
+                case 3:
+                    username = args[1];
+                    userAvatarURL = args[2];
+                    break;
+            }
+            await currentChannel.createWebhook(username, userAvatarURL).then(wh=>{
+                wh.send(anonyMessage);
+                wh.delete();
+            });
+
             break;
             
     }
     prompts({
         type: "text",
         name: "command",
-        message: "[" + client.user.username + "@" + (currentChannel != null ? currentChannel.name : "nullChannel") + "]: "
+        message: "[" + client.user.username + "@" + getChannelName(currentChannel) + "]: "
     }).then(answer=>cli(answer.command));
 }
 
@@ -158,8 +182,29 @@ async function messageInput()
     else return answer.line + "\n" + await messageInput();
 }
 function allnumeric(str)
-   {
-      var numbers = /^[0-9]+$/;
-      if(str.value.match(numbers))return true;
-      else return false;
-   } 
+{
+    if(str === null || str === undefined)return false;
+    let numbers = new RegExp('^\\d+$');
+    return numbers.test(str);
+}
+function getChannelName(channel)
+{
+    if(channel === null)return "nullChannel";
+    switch(channel.type)
+    {
+        case "dm":
+            return channel.recipient.username;
+        case "group":
+            if(channel.name !== null)return channel.name;
+            let name = "";
+            let usrCounter = 0;
+            if(channel.name === null)channel.recipients.forEach(user=>{
+                name+=(name.length!==0?",":"")+user.username;
+                usrCounter++;
+                if(usrCounter === 3)return;
+            });
+            return name;
+        default:            
+            return channel.name;
+    }
+}
