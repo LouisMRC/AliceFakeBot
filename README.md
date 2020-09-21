@@ -1,2 +1,2 @@
-# AliceFakeBot
+# A CLI Discord Client
  
